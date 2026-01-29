@@ -1,0 +1,25 @@
+{
+  "manifest_version": 1,
+  "name": "Quick E2B 云沙箱",
+  "version": "1.0.9",
+  "description": "使用 E2B 云端沙箱安全执行 Python 代码。支持数据分析、网络爬虫、图表绘制、文件操作等多种场景。提供隔离的执行环境，确保代码安全运行，支持自动安装依赖包。",
+  "author": {
+    "name": "sansenjian",
+    "url": "https://github.com/sansenjian/quick-e2b-sandbox"
+  },
+  "license": "MIT",
+  "homepage_url": "https://github.com/sansenjian/quick-e2b-sandbox",
+  "categories": [
+    "Utility Tools"
+  ],
+  "keywords": [
+    "code",
+    "sandbox",
+    "python",
+    "e2b",
+    "execution",
+    "data-analysis",
+    "security"
+  ],
+  "id": "sansenjian.quick-e2b-sandbox"
+}
