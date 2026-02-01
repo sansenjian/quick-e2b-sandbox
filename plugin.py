@@ -171,6 +171,7 @@ except: pass
         api_key = self.get_config("e2b.api_key", "")
         api_base_url = self.get_config("e2b.api_base_url", "")
         timeout = self.get_config("e2b.timeout", 60)
+        max_retries = self.get_config("e2b.max_retries", 2)
 
         logger.debug(f"[E2BSandboxTool] 获取配置成功 | api_key: {api_key[:8] if api_key else 'None'}... | api_base_url: {api_base_url or 'Default'}")
 
@@ -186,18 +187,61 @@ except: pass
         
         sandbox = None
         llm_feedback = []
+        
+        # 重试机制
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # 3. 创建沙箱
+                logger.info(f"[E2BSandboxTool] 尝试创建沙箱 (第 {attempt + 1}/{max_retries} 次)")
+                sandbox = await asyncio.wait_for(
+                    AsyncSandbox.create(
+                        api_key=api_key,
+                        api_url=api_base_url if api_base_url else None,
+                        timeout=timeout + 30
+                    ),
+                    timeout=60
+                )
+                
+                # 创建成功，跳出重试循环
+                break
+                
+            except asyncio.TimeoutError as e:
+                last_error = f"创建沙箱超时（第 {attempt + 1} 次尝试）"
+                logger.warning(f"[E2BSandboxTool] {last_error}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)  # 等待 2 秒后重试
+                continue
+                
+            except Exception as e:
+                error_msg = str(e)
+                last_error = error_msg
+                
+                # 判断错误类型
+                if "ConnectError" in error_msg or "connection" in error_msg.lower():
+                    logger.error(f"[E2BSandboxTool] 网络连接失败 (第 {attempt + 1} 次): {error_msg}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"[E2BSandboxTool] 等待 3 秒后重试...")
+                        await asyncio.sleep(3)
+                        continue
+                    else:
+                        # 最后一次尝试失败，返回友好错误
+                        return {
+                            "name": self.name,
+                            "content": f"❌ 网络连接错误：无法连接到 E2B 服务器。\n\n可能原因：\n1. 代理服务器不可用\n2. 网络连接问题\n3. API 密钥无效\n\n建议：\n- 检查网络连接\n- 验证 API Key 是否正确\n- 检查代理地址配置\n\n技术详情：{error_msg}"
+                        }
+                else:
+                    # 其他错误，直接抛出
+                    raise
+        
+        # 如果所有重试都失败
+        if sandbox is None:
+            return {
+                "name": self.name,
+                "content": f"❌ 创建沙箱失败：已重试 {max_retries} 次。\n\n最后错误：{last_error}\n\n建议检查网络连接和配置。"
+            }
 
         try:
-            # 3. 创建沙箱
-            sandbox = await asyncio.wait_for(
-                AsyncSandbox.create(
-                    api_key=api_key,
-                    api_url=api_base_url if api_base_url else None,
-                    timeout=timeout + 30
-                ),
-                timeout=60 # 增加创建沙箱的超时时间，应对网络波动
-            )
-
             # 4. 自动装库
             await self._auto_install_dependencies(sandbox, code_to_run)
 
@@ -335,7 +379,7 @@ class E2BSandboxPlugin(BasePlugin):
     # 配置 schema
     config_schema: dict = {
             "plugin": {
-                "config_version": ConfigField(type=str, default="1.0.9", description="配置文件版本"),
+                "config_version": ConfigField(type=str, default="1.0.10", description="配置文件版本"),
                 "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
             },
             "e2b": {
@@ -349,7 +393,7 @@ class E2BSandboxPlugin(BasePlugin):
                 "api_base_url": ConfigField(
                     type=str,
                     default="",
-                    description="E2B API Base URL（可选）",
+                    description="E2B API Base URL（可选，国内用户建议配置代理）",
                     required=False,
                 ),
                 "timeout": ConfigField(
@@ -358,6 +402,13 @@ class E2BSandboxPlugin(BasePlugin):
                     description="代码执行超时时间（秒）",
                     min=10,
                     max=300,
+                ),
+                "max_retries": ConfigField(
+                    type=int,
+                    default=2,
+                    description="网络连接失败时的最大重试次数",
+                    min=0,
+                    max=5,
                 ),
                 "max_output_length": ConfigField(
                     type=int,
