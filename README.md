@@ -161,6 +161,7 @@ python main.py
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `timeout` | int | 60 | 代码执行超时时间（秒，10~300） |
+| `max_retries` | int | 2 | 网络连接失败时的最大重试次数（0~5） |
 | `max_output_length` | int | 2000 | 最大输出长度（字符，500~10000） |
 | `max_stdout_length` | int | 500 | 标准输出最大长度（字符，100~2000） |
 
@@ -174,7 +175,7 @@ python main.py
 ```toml
 [plugin]
 enabled = true
-config_version = "1.0.9"
+config_version = "1.0.10"
 
 [e2b]
 # API 配置
@@ -183,6 +184,7 @@ api_base_url = ""
 
 # 执行配置
 timeout = 60
+max_retries = 2
 max_output_length = 2000
 max_stdout_length = 500
 
@@ -358,7 +360,7 @@ A: 可以。在 `config.toml` 中设置 `api_base_url` 为代理地址。
 
 **最后更新**：2025-01-30
 
-**版本**：1.0.9
+**版本**：1.0.10
 
 **作者**：sansenjian
 
