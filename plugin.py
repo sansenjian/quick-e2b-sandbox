@@ -5,6 +5,7 @@ import re
 import hashlib
 import asyncio
 import traceback
+import base64
 from typing import List, Tuple, Type, Optional, Dict, Any, Union
 
 from src.common.logger import get_logger
@@ -28,8 +29,18 @@ except ImportError:
     except ImportError:
         AsyncSandbox = None
 
+# 尝试导入 Action 相关
+try:
+    from src.plugin_system import BaseAction, ActionActivationType
+except ImportError:
+    BaseAction = None
+    ActionActivationType = None
+
 # 日志初始化
 logger = get_logger("e2b_sandbox")
+
+# 全局变量：存储最近生成的图片路径
+_recent_images: Dict[str, List[str]] = {}
 
 
 # ---------- Tool 组件定义 ----------
@@ -83,6 +94,8 @@ class E2BSandboxTool(BaseTool):
     def __init__(self, plugin_config: Optional[dict] = None, chat_stream: Optional[Any] = None):
         """初始化 E2B 沙箱工具"""
         super().__init__(plugin_config, chat_stream)
+        # 保存配置
+        self.config = plugin_config or {}
         # 重复检测：session_id -> code_hash
         self.code_hashes: Dict[str, str] = {}
     
@@ -153,204 +166,198 @@ except: pass
 """
 
     async def execute(self, function_args: Dict[str, Any]) -> Dict[str, str]:
-        """执行 Python 代码的主方法"""
+        """执行 Python 代码的主方法（MVP 集成版）
+        
+        集成了 CodeGenerator、CodeExecutor 和 ResultOptimizer
+        """
         logger.debug(f"[E2BSandboxTool] execute 方法被触发 | args: {list(function_args.keys())}")
-        code_raw = function_args.get("code", "").strip()
-        if not code_raw:
+        
+        # 获取用户请求
+        user_request = function_args.get("code", "").strip()
+        if not user_request:
             return {"name": self.name, "content": "❌ 错误：代码参数为空。"}
-
-        code_to_run = self._clean_code(code_raw)
+        
         session_id = self.chat_id or "default_session"
-
-        # 1. 重复检测
-        if self._check_duplicate(session_id, code_to_run):
-            logger.warning(f"[E2BSandboxTool] 拦截到重复调用 | Session: {session_id}")
-            return {"name": self.name, "content": "⚠️ 系统警告：检测到重复的代码执行请求。"}
-
-        # 2. 配置获取（使用 self.get_config 最佳实践）
-        api_key = self.get_config("e2b.api_key", "")
-        api_base_url = self.get_config("e2b.api_base_url", "")
-        timeout = self.get_config("e2b.timeout", 60)
-        max_retries = self.get_config("e2b.max_retries", 2)
-
-        logger.debug(f"[E2BSandboxTool] 获取配置成功 | api_key: {api_key[:8] if api_key else 'None'}... | api_base_url: {api_base_url or 'Default'}")
-
-        if not api_key:
-            logger.error(f"[E2BSandboxTool] 错误：未配置 E2B API Key。当前配置: {self.config}")
-            return {"name": self.name, "content": "❌ 错误：未配置 E2B API Key。请在插件配置中设置有效密钥。"}
         
-        if AsyncSandbox is None:
-            logger.error("[E2BSandboxTool] 错误：AsyncSandbox 未正确导入。")
-            return {"name": self.name, "content": "❌ 错误：未安装 e2b_code_interpreter SDK。"}
-
-        logger.info(f"[E2BSandboxTool] 启动沙箱执行 | Session: {session_id} | 超时: {timeout}s")
-        
-        sandbox = None
-        llm_feedback = []
-        
-        # 重试机制
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                # 3. 创建沙箱
-                logger.info(f"[E2BSandboxTool] 尝试创建沙箱 (第 {attempt + 1}/{max_retries} 次)")
-                sandbox = await asyncio.wait_for(
-                    AsyncSandbox.create(
-                        api_key=api_key,
-                        api_url=api_base_url if api_base_url else None,
-                        timeout=timeout + 30
-                    ),
-                    timeout=60
-                )
-                
-                # 创建成功，跳出重试循环
-                break
-                
-            except asyncio.TimeoutError as e:
-                last_error = f"创建沙箱超时（第 {attempt + 1} 次尝试）"
-                logger.warning(f"[E2BSandboxTool] {last_error}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2)  # 等待 2 秒后重试
-                continue
-                
-            except Exception as e:
-                error_msg = str(e)
-                last_error = error_msg
-                
-                # 判断错误类型
-                if "ConnectError" in error_msg or "connection" in error_msg.lower():
-                    logger.error(f"[E2BSandboxTool] 网络连接失败 (第 {attempt + 1} 次): {error_msg}")
-                    if attempt < max_retries - 1:
-                        logger.info(f"[E2BSandboxTool] 等待 3 秒后重试...")
-                        await asyncio.sleep(3)
-                        continue
-                    else:
-                        # 最后一次尝试失败，返回友好错误
-                        return {
-                            "name": self.name,
-                            "content": f"❌ 网络连接错误：无法连接到 E2B 服务器。\n\n可能原因：\n1. 代理服务器不可用\n2. 网络连接问题\n3. API 密钥无效\n\n建议：\n- 检查网络连接\n- 验证 API Key 是否正确\n- 检查代理地址配置\n\n技术详情：{error_msg}"
-                        }
-                else:
-                    # 其他错误，直接抛出
-                    raise
-        
-        # 如果所有重试都失败
-        if sandbox is None:
-            return {
-                "name": self.name,
-                "content": f"❌ 创建沙箱失败：已重试 {max_retries} 次。\n\n最后错误：{last_error}\n\n建议检查网络连接和配置。"
-            }
-
         try:
-            # 4. 自动装库
-            await self._auto_install_dependencies(sandbox, code_to_run)
-
-            # 5. 执行代码
-            full_code = self._get_setup_code() + "\n" + code_to_run
-            execution = await asyncio.wait_for(
-                sandbox.run_code(full_code),
-                timeout=timeout
+            # ========== 阶段 1: 代码生成 ==========
+            # 导入组件
+            from .code_generator import CodeGenerator
+            from .template_library import TemplateLibrary
+            from .code_executor import CodeExecutor
+            from .result_optimizer import ResultOptimizer
+            from .models import Intent, Context
+            
+            # 初始化组件
+            template_library = TemplateLibrary()
+            code_generator = CodeGenerator(template_library, None, self.config)  # LLM 暂时为 None
+            code_executor = CodeExecutor(self.config)
+            result_optimizer = ResultOptimizer(None, self.config)  # LLM 暂时为 None
+            
+            logger.info(f"[E2BSandboxTool] 开始代码生成 | user_request: {user_request[:50]}...")
+            
+            # MVP 阶段：创建简单的 Intent 对象
+            # 将 user_request 放在 parameters 中，让模板库进行关键词匹配
+            # 同时尝试提取 URL 参数（用于截图等需要 URL 的模板）
+            parameters = {"user_request": user_request}
+            
+            # 简单的 URL 提取逻辑
+            import re
+            # 修改正则表达式，只匹配 URL 的有效字符，排除引号、括号等
+            url_pattern = r'https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+'
+            url_match = re.search(url_pattern, user_request)
+            if url_match:
+                # 清理 URL 末尾可能的标点符号
+                url = url_match.group(0)
+                # 移除末尾的引号、括号、逗号等
+                url = url.rstrip('"\'),.;!?')
+                parameters["url"] = url
+                logger.debug(f"[E2BSandboxTool] 提取到 URL: {parameters['url']}")
+            
+            simple_intent = Intent(
+                task_type="unknown",
+                sub_type=None,
+                parameters=parameters,
+                confidence=1.0,
+                needs_context=False,
+                context_refs=[]
             )
             
-            logger.info(f"[E2BSandboxTool] 代码执行完成 | Session: {session_id}")
-            logger.debug(f"[E2BSandboxTool] 执行结果: {execution}")
-
-            # 6. 处理结果
-            # 6.1 处理图片
-            has_sent_image = False
-            if execution.results:
-                for res in execution.results:
-                    img_data = None
-                    # 兼容不同版本的 SDK 属性
-                    if hasattr(res, 'png') and res.png:
-                        img_data = res.png
-                    elif hasattr(res, 'jpeg') and res.jpeg:
-                        img_data = res.jpeg
-                    elif hasattr(res, 'formats'):
-                        formats = res.formats() if callable(res.formats) else res.formats
-                        if isinstance(formats, dict):
-                            img_data = formats.get('png') or formats.get('jpeg')
-
-                    if img_data:
-                        # 发送图片到流
+            # MVP 阶段：创建空的 Context 对象
+            simple_context = Context(
+                messages=[],
+                last_execution=None,
+                last_result=None,
+                last_code=None,
+                last_images=[],
+                variables={}
+            )
+            
+            # 生成代码
+            generated_code = await code_generator.generate(simple_intent, simple_context)
+            
+            logger.info(
+                f"[E2BSandboxTool] 代码生成完成 | "
+                f"source={generated_code.source}, "
+                f"confidence={generated_code.confidence:.2f}"
+            )
+            
+            # 调试：保存生成的代码到文件
+            debug_code_path = f"generated_code_{session_id}.py"
+            try:
+                with open(debug_code_path, 'w', encoding='utf-8') as f:
+                    f.write(generated_code.code)
+                logger.debug(f"[E2BSandboxTool] 生成的代码已保存到: {debug_code_path}")
+            except Exception as e:
+                logger.warning(f"[E2BSandboxTool] 保存代码失败: {e}")
+            
+            # 查找 url = 这一行
+            import re
+            url_line_match = re.search(r'^url = .+$', generated_code.code, re.MULTILINE)
+            if url_line_match:
+                logger.info(f"[E2BSandboxTool] URL 赋值行: {url_line_match.group(0)}")
+            
+            # ========== 阶段 2: 代码执行 ==========
+            logger.info(f"[E2BSandboxTool] 开始执行代码 | Session: {session_id}")
+            
+            # 执行代码（CodeExecutor 会从 self.config 读取配置）
+            execution_result = await code_executor.execute(generated_code.code)
+            
+            logger.info(
+                f"[E2BSandboxTool] 代码执行完成 | "
+                f"success={execution_result.success}"
+            )
+            
+            # ========== 阶段 3: 结果优化 ==========
+            logger.info(f"[E2BSandboxTool] 开始结果优化")
+            
+            # 优化结果
+            optimized_result = await result_optimizer.optimize(
+                user_request=user_request,
+                code=generated_code.code,
+                raw_result=execution_result,
+                intent=None  # MVP 阶段暂不使用意图
+            )
+            
+            logger.info(f"[E2BSandboxTool] 结果优化完成")
+            logger.debug(f"[E2BSandboxTool] 优化后的结果: {optimized_result[:200]}...")
+            
+            # ========== 阶段 4: 保存图片并发送给用户 ==========
+            if execution_result.images:
+                logger.info(f"[E2BSandboxTool] 检测到 {len(execution_result.images)} 张图片")
+                
+                import os
+                import base64
+                from datetime import datetime
+                
+                # 创建图片保存目录
+                image_dir = os.path.join(os.path.dirname(__file__), "output_images")
+                os.makedirs(image_dir, exist_ok=True)
+                
+                saved_images = []
+                sent_count = 0
+                
+                for i, img_bytes in enumerate(execution_result.images):
+                    try:
+                        # 1. 保存图片到本地
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"output_{timestamp}_{i}.png"
+                        filepath = os.path.join(image_dir, filename)
+                        
+                        with open(filepath, 'wb') as f:
+                            f.write(img_bytes)
+                        
+                        saved_images.append(filepath)
+                        logger.info(f"[E2BSandboxTool] 图片已保存: {filepath} | 大小={len(img_bytes)} 字节")
+                        
+                        # 2. 发送图片给用户
                         if self.chat_id:
+                            # 转换为 base64
+                            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                            
+                            # 发送图片
                             success = await send_api.image_to_stream(
-                                image_base64=img_data,
+                                image_base64=img_base64,
                                 stream_id=self.chat_id
                             )
+                            
                             if success:
-                                has_sent_image = True
-                                logger.debug(f"[E2BSandboxTool] 图片发送成功 | Session: {session_id}")
-
-                if has_sent_image:
-                    llm_feedback.append("[系统通知：检测到图表已生成，已自动发送给用户。]")
-
-            # 6.2 处理日志
-            debug_mode = self.get_config("e2b.debug_mode", False)
-            
-            if hasattr(execution, 'logs'):
-                if execution.logs.stdout:
-                    stdout_text = ''.join(execution.logs.stdout).strip()
-                    logger.debug(f"[E2BSandboxTool] 标准输出 (原始): {stdout_text}")
-                    
-                    # 调试模式：输出原始内容
-                    if debug_mode:
-                        logger.info(f"[E2BSandboxTool] [DEBUG] 标准输出 (未过滤): {stdout_text}")
-                    
-                    # 限制输出长度，避免触发消息分割限制
-                    max_stdout_len = self.get_config("e2b.max_stdout_length", 500)
-                    if len(stdout_text) > max_stdout_len:
-                        stdout_text = stdout_text[:max_stdout_len] + "\n...(输出已截断)"
-                        logger.debug(f"[E2BSandboxTool] 标准输出 (截断后): {stdout_text}")
-                    llm_feedback.append(f"📤 输出:\n{stdout_text}")
-                    
-                if execution.logs.stderr:
-                    stderr_text = ''.join(execution.logs.stderr).strip()
-                    
-                    # 调试模式：始终输出 stderr 原始内容
-                    if debug_mode:
-                        logger.info(f"[E2BSandboxTool] [DEBUG] 错误输出 (未过滤): {stderr_text}")
-                    
-                    # 过滤 curl 下载进度信息
-                    if self._is_curl_progress(stderr_text):
-                        logger.debug(f"[E2BSandboxTool] 过滤掉 curl 进度信息")
-                        # 调试模式：说明过滤了什么
-                        if debug_mode:
-                            logger.info(f"[E2BSandboxTool] [DEBUG] 已过滤 curl 进度信息")
+                                sent_count += 1
+                                logger.info(f"[E2BSandboxTool] 图片已发送给用户 ({i+1}/{len(execution_result.images)})")
+                            else:
+                                logger.warning(f"[E2BSandboxTool] 图片发送失败 ({i+1}/{len(execution_result.images)})")
+                        
+                    except Exception as e:
+                        logger.error(f"[E2BSandboxTool] 处理图片失败: {e}")
+                
+                # 在结果中添加图片信息
+                if saved_images:
+                    if sent_count > 0:
+                        image_info = f"\n\n📸 已生成并发送 {sent_count} 张图片"
                     else:
-                        logger.warning(f"[E2BSandboxTool] 错误输出: {stderr_text}")
-                        llm_feedback.append(f"⚠️ 错误:\n{stderr_text}")
-
-            # 7. 最终反馈
-            result_content = "\n\n".join(llm_feedback)
-            if not result_content:
-                result_content = "✅ 代码执行成功，但没有产生任何输出。"
+                        image_info = f"\n\n📸 已生成 {len(saved_images)} 张图片（保存在本地）"
+                    
+                    optimized_result += image_info
+                    logger.info(f"[E2BSandboxTool] 图片处理完成 | 保存={len(saved_images)}, 发送={sent_count}")
             
-            logger.debug(f"[E2BSandboxTool] 最终返回给 LLM 的内容: {result_content}")
-            
-            # 截断超长输出
-            max_len = self.get_config("e2b.max_output_length", 2000)
-            if len(result_content) > max_len:
-                result_content = result_content[:max_len] + "\n...(输出已截断)"
-                logger.debug(f"[E2BSandboxTool] 内容被截断，最终长度: {len(result_content)}")
-
+            # 返回结果
             return {
                 "name": self.name,
-                "content": result_content
+                "content": optimized_result
             }
-
-        except asyncio.TimeoutError:
-            logger.warning(f"[E2BSandboxTool] 代码执行超时 | Session: {session_id}")
-            return {"name": self.name, "content": f"❌ 错误：代码执行超时（限时 {timeout} 秒）。"}
+            
+        except ImportError as e:
+            logger.error(f"[E2BSandboxTool] 导入组件失败: {e}")
+            return {
+                "name": self.name,
+                "content": f"❌ 系统错误：无法加载必需的组件。\n\n技术详情：{str(e)}"
+            }
         except Exception as e:
             logger.error(f"[E2BSandboxTool] 执行异常: {traceback.format_exc()}")
-            return {"name": self.name, "content": f"❌ 运行时错误: {str(e)}"}
-        finally:
-            if sandbox:
-                try:
-                    await asyncio.wait_for(sandbox.kill(), timeout=5)
-                except Exception:
-                    pass
+            return {
+                "name": self.name,
+                "content": f"❌ 运行时错误: {str(e)}"
+            }
 
 
 # ---------- 插件注册（必须放在最后） ----------

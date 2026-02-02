@@ -8,6 +8,17 @@
 !README.md
 !LICENSE
 
+# 功能模块文件
+!models.py
+!template_library.py
+!code_generator.py
+!code_executor.py
+!result_optimizer.py
+
+# 模板文件夹
+!templates/
+!templates/**
+
 # Git 配置文件
 !.gitignore
 
