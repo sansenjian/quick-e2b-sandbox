@@ -5,7 +5,12 @@ E2B 插件模板库
 """
 
 from typing import Dict, Optional
-from .models import Template
+
+# 支持相对导入和绝对导入
+try:
+    from .models import Template
+except ImportError:
+    from models import Template
 
 
 class TemplateLibrary:
@@ -61,18 +66,26 @@ class TemplateLibrary:
         Returns:
             匹配的 Template 对象，如果没有匹配则返回 None
         """
+        import re  # 在函数最开头导入
+        
         request_lower = user_request.lower()
         
-        # 匹配网页截图模板
-        if any(kw in request_lower for kw in ["截图", "screenshot", "截屏", "抓图"]):
-            return self.get("web_screenshot")
+        # 优先匹配更具体的模式（避免误匹配）
         
-        # 匹配网页抓取模板
-        if any(kw in request_lower for kw in ["网页", "标题", "title", "抓取"]):
+        # 匹配网页截图模板（需要有 URL）
+        if any(kw in request_lower for kw in ["截图", "screenshot", "截屏", "抓图"]):
+            # 检查是否包含 URL
+            if re.search(r'https?://', request_lower):
+                return self.get("web_screenshot")
+        
+        # 匹配网页抓取模板（需要有 URL 且提到网页/标题）
+        if any(kw in request_lower for kw in ["网页", "抓取"]) or \
+           (("标题" in request_lower or "title" in request_lower) and re.search(r'https?://', request_lower)):
             return self.get("web_scrape_title")
         
         # 匹配绘图模板
         if any(kw in request_lower for kw in ["正弦", "sin", "曲线", "sine"]):
             return self.get("plot_sine_wave")
         
+        # 如果没有匹配到任何模板，返回 None（将使用 LLM 生成）
         return None

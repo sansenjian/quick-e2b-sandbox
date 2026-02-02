@@ -7,7 +7,12 @@ E2B 插件代码执行引擎
 import asyncio
 from typing import Dict, Any, Optional
 from src.common.logger import get_logger
-from .models import ExecutionResult
+
+# 支持相对导入和绝对导入
+try:
+    from .models import ExecutionResult
+except ImportError:
+    from models import ExecutionResult
 
 # 尝试导入 E2B SDK
 try:

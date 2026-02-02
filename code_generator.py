@@ -9,8 +9,14 @@ import textwrap
 import time
 from typing import Dict, Any, Optional
 from src.common.logger import get_logger
-from .models import Intent, Context, GeneratedCode, Template
-from .template_library import TemplateLibrary
+
+# 支持相对导入和绝对导入
+try:
+    from .models import Intent, Context, GeneratedCode, Template
+    from .template_library import TemplateLibrary
+except ImportError:
+    from models import Intent, Context, GeneratedCode, Template
+    from template_library import TemplateLibrary
 
 
 class CodeGenerator:
@@ -190,7 +196,8 @@ class CodeGenerator:
             格式化后的字符串
         """
         if isinstance(value, str):
-            return f"'{value}'"
+            # 使用 repr() 来安全地转义字符串，避免引号冲突
+            return repr(value)
         elif isinstance(value, (list, dict)):
             return repr(value)
         elif value is None:

@@ -5,6 +5,7 @@ import re
 import hashlib
 import asyncio
 import traceback
+import base64
 from typing import List, Tuple, Type, Optional, Dict, Any, Union
 
 from src.common.logger import get_logger
@@ -28,8 +29,18 @@ except ImportError:
     except ImportError:
         AsyncSandbox = None
 
+# 尝试导入 Action 相关
+try:
+    from src.plugin_system import BaseAction, ActionActivationType
+except ImportError:
+    BaseAction = None
+    ActionActivationType = None
+
 # 日志初始化
 logger = get_logger("e2b_sandbox")
+
+# 全局变量：存储最近生成的图片路径
+_recent_images: Dict[str, List[str]] = {}
 
 
 # ---------- Tool 组件定义 ----------
@@ -83,6 +94,8 @@ class E2BSandboxTool(BaseTool):
     def __init__(self, plugin_config: Optional[dict] = None, chat_stream: Optional[Any] = None):
         """初始化 E2B 沙箱工具"""
         super().__init__(plugin_config, chat_stream)
+        # 保存配置
+        self.config = plugin_config or {}
         # 重复检测：session_id -> code_hash
         self.code_hashes: Dict[str, str] = {}
     
@@ -185,10 +198,26 @@ except: pass
             
             # MVP 阶段：创建简单的 Intent 对象
             # 将 user_request 放在 parameters 中，让模板库进行关键词匹配
+            # 同时尝试提取 URL 参数（用于截图等需要 URL 的模板）
+            parameters = {"user_request": user_request}
+            
+            # 简单的 URL 提取逻辑
+            import re
+            # 修改正则表达式，只匹配 URL 的有效字符，排除引号、括号等
+            url_pattern = r'https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+'
+            url_match = re.search(url_pattern, user_request)
+            if url_match:
+                # 清理 URL 末尾可能的标点符号
+                url = url_match.group(0)
+                # 移除末尾的引号、括号、逗号等
+                url = url.rstrip('"\'),.;!?')
+                parameters["url"] = url
+                logger.debug(f"[E2BSandboxTool] 提取到 URL: {parameters['url']}")
+            
             simple_intent = Intent(
                 task_type="unknown",
                 sub_type=None,
-                parameters={"user_request": user_request},
+                parameters=parameters,
                 confidence=1.0,
                 needs_context=False,
                 context_refs=[]
@@ -212,6 +241,21 @@ except: pass
                 f"source={generated_code.source}, "
                 f"confidence={generated_code.confidence:.2f}"
             )
+            
+            # 调试：保存生成的代码到文件
+            debug_code_path = f"generated_code_{session_id}.py"
+            try:
+                with open(debug_code_path, 'w', encoding='utf-8') as f:
+                    f.write(generated_code.code)
+                logger.debug(f"[E2BSandboxTool] 生成的代码已保存到: {debug_code_path}")
+            except Exception as e:
+                logger.warning(f"[E2BSandboxTool] 保存代码失败: {e}")
+            
+            # 查找 url = 这一行
+            import re
+            url_line_match = re.search(r'^url = .+$', generated_code.code, re.MULTILINE)
+            if url_line_match:
+                logger.info(f"[E2BSandboxTool] URL 赋值行: {url_line_match.group(0)}")
             
             # ========== 阶段 2: 代码执行 ==========
             logger.info(f"[E2BSandboxTool] 开始执行代码 | Session: {session_id}")
@@ -237,6 +281,64 @@ except: pass
             
             logger.info(f"[E2BSandboxTool] 结果优化完成")
             logger.debug(f"[E2BSandboxTool] 优化后的结果: {optimized_result[:200]}...")
+            
+            # ========== 阶段 4: 保存图片并发送给用户 ==========
+            if execution_result.images:
+                logger.info(f"[E2BSandboxTool] 检测到 {len(execution_result.images)} 张图片")
+                
+                import os
+                import base64
+                from datetime import datetime
+                
+                # 创建图片保存目录
+                image_dir = os.path.join(os.path.dirname(__file__), "output_images")
+                os.makedirs(image_dir, exist_ok=True)
+                
+                saved_images = []
+                sent_count = 0
+                
+                for i, img_bytes in enumerate(execution_result.images):
+                    try:
+                        # 1. 保存图片到本地
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"output_{timestamp}_{i}.png"
+                        filepath = os.path.join(image_dir, filename)
+                        
+                        with open(filepath, 'wb') as f:
+                            f.write(img_bytes)
+                        
+                        saved_images.append(filepath)
+                        logger.info(f"[E2BSandboxTool] 图片已保存: {filepath} | 大小={len(img_bytes)} 字节")
+                        
+                        # 2. 发送图片给用户
+                        if self.chat_id:
+                            # 转换为 base64
+                            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                            
+                            # 发送图片
+                            success = await send_api.image_to_stream(
+                                image_base64=img_base64,
+                                stream_id=self.chat_id
+                            )
+                            
+                            if success:
+                                sent_count += 1
+                                logger.info(f"[E2BSandboxTool] 图片已发送给用户 ({i+1}/{len(execution_result.images)})")
+                            else:
+                                logger.warning(f"[E2BSandboxTool] 图片发送失败 ({i+1}/{len(execution_result.images)})")
+                        
+                    except Exception as e:
+                        logger.error(f"[E2BSandboxTool] 处理图片失败: {e}")
+                
+                # 在结果中添加图片信息
+                if saved_images:
+                    if sent_count > 0:
+                        image_info = f"\n\n📸 已生成并发送 {sent_count} 张图片"
+                    else:
+                        image_info = f"\n\n📸 已生成 {len(saved_images)} 张图片（保存在本地）"
+                    
+                    optimized_result += image_info
+                    logger.info(f"[E2BSandboxTool] 图片处理完成 | 保存={len(saved_images)}, 发送={sent_count}")
             
             # 返回结果
             return {

@@ -6,7 +6,12 @@
 
 from typing import Optional
 from src.common.logger import get_logger
-from .models import ExecutionResult, Intent
+
+# 支持相对导入和绝对导入
+try:
+    from .models import ExecutionResult, Intent
+except ImportError:
+    from models import ExecutionResult, Intent
 
 logger = get_logger("ResultOptimizer")
 
@@ -119,7 +124,7 @@ class ResultOptimizer:
             result: 执行结果
             
         Returns:
-            优化后的结果字符串
+            优化后的结果字符串（不包含图片 base64 数据）
         """
         lines = ["✅ 图表生成成功", "━" * 40]
         
@@ -136,13 +141,14 @@ class ResultOptimizer:
             lines.append(output)
             lines.append("━" * 40)
         
-        # 添加图片信息
+        # 添加图片信息（只显示数量，不包含 base64 数据）
         if len(result.images) == 1:
-            lines.append(f"📈 已生成图片: {result.images[0]}")
+            lines.append(f"📈 已生成 1 张图片")
         else:
-            lines.append(f"📈 已生成 {len(result.images)} 张图片:")
-            for img in result.images:
-                lines.append(f"  • {img}")
+            lines.append(f"📈 已生成 {len(result.images)} 张图片")
+        
+        # 提示：图片已通过其他方式发送
+        lines.append("💡 图片已自动发送")
         
         return "\n".join(lines)
     
