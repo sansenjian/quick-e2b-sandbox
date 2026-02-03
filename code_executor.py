@@ -197,19 +197,56 @@ class CodeExecutor:
         error_parts = []
         images = []
         
-        # 调试：打印执行结果的结构
-        self.logger.info(f"[CodeExecutor] 执行结果类型: {type(execution)}")
-        self.logger.info(f"[CodeExecutor] 执行结果属性: {dir(execution)}")
+        # 调试：打印执行结果的详细结构（debug 级别）
+        self.logger.debug(f"[CodeExecutor] 执行结果类型: {type(execution)}")
+        self.logger.debug(f"[CodeExecutor] 执行结果属性: {dir(execution)}")
         
-        # 尝试打印执行结果的所有属性值
+        # 尝试打印执行结果的所有属性值（debug 级别）
         for attr in dir(execution):
             if not attr.startswith('_'):
                 try:
                     value = getattr(execution, attr)
                     if not callable(value):
-                        self.logger.info(f"[CodeExecutor]   {attr} = {value}")
+                        self.logger.debug(f"[CodeExecutor]   {attr} = {value}")
                 except Exception as e:
                     self.logger.debug(f"[CodeExecutor]   {attr} = <无法访问: {e}>")
+        
+        # 打印关键属性摘要（info 级别 - 简洁格式）
+        key_attrs = ['error', 'execution_count', 'logs', 'results', 'text']
+        for attr in key_attrs:
+            if hasattr(execution, attr):
+                try:
+                    value = getattr(execution, attr)
+                    if not callable(value):
+                        # 格式化输出
+                        if attr == 'logs':
+                            # 日志对象特殊处理
+                            stdout_count = len(value.stdout) if hasattr(value, 'stdout') else 0
+                            stderr_count = len(value.stderr) if hasattr(value, 'stderr') else 0
+                            self.logger.info(f"[CodeExecutor]   {attr}: stdout={stdout_count}行, stderr={stderr_count}行")
+                        elif attr == 'results':
+                            # 结果列表特殊处理
+                            self.logger.info(f"[CodeExecutor]   {attr}: {len(value)}个结果")
+                        elif attr == 'error':
+                            # 错误对象特殊处理
+                            if value:
+                                self.logger.info(f"[CodeExecutor]   {attr}: {value.name}")
+                            else:
+                                self.logger.info(f"[CodeExecutor]   {attr}: None")
+                        else:
+                            # 其他属性直接输出
+                            self.logger.info(f"[CodeExecutor]   {attr}: {value}")
+                except Exception as e:
+                    self.logger.debug(f"[CodeExecutor]   {attr}: <无法访问>")
+        
+        # 首先检查 execution.error 属性
+        if hasattr(execution, 'error') and execution.error:
+            error_obj = execution.error
+            error_msg = f"{error_obj.name}: {error_obj.value}"
+            if hasattr(error_obj, 'traceback') and error_obj.traceback:
+                error_msg += f"\n{error_obj.traceback}"
+            error_parts.append(error_msg)
+            self.logger.warning(f"[CodeExecutor] 检测到执行错误: {error_obj.name}")
         
         # 处理图片
         if hasattr(execution, 'results') and execution.results:
@@ -233,7 +270,7 @@ class CodeExecutor:
                         images.append(img_bytes)
                         self.logger.debug(f"[CodeExecutor] 检测到图片输出 | 大小={len(img_bytes)} 字节")
         
-        # 处理日志 - 尝试多种可能的属性名
+        # 处理日志
         logs_obj = None
         if hasattr(execution, 'logs'):
             logs_obj = execution.logs
@@ -241,10 +278,7 @@ class CodeExecutor:
             logs_obj = execution.log
         
         if logs_obj:
-            self.logger.debug(f"[CodeExecutor] 日志对象类型: {type(logs_obj)}")
-            self.logger.debug(f"[CodeExecutor] 日志对象属性: {dir(logs_obj)}")
-            
-            # 标准输出 - 尝试多种可能的属性名
+            # 标准输出
             stdout_text = None
             if hasattr(logs_obj, 'stdout'):
                 stdout_data = logs_obj.stdout
@@ -265,11 +299,14 @@ class CodeExecutor:
                 if len(stdout_text) > max_stdout_len:
                     stdout_text = stdout_text[:max_stdout_len] + "\n...(输出已截断)"
                 output_parts.append(stdout_text)
-                self.logger.info(f"[CodeExecutor] 标准输出长度: {len(stdout_text)} 字符")
+                
+                # 简洁输出（info 级别）
+                line_count = stdout_text.count('\n') + 1
+                self.logger.info(f"[CodeExecutor] 标准输出: {line_count}行, {len(stdout_text)}字符")
             else:
-                self.logger.warning("[CodeExecutor] 未找到标准输出")
+                self.logger.debug("[CodeExecutor] 无标准输出")
             
-            # 错误输出 - 尝试多种可能的属性名
+            # 错误输出
             stderr_text = None
             if hasattr(logs_obj, 'stderr'):
                 stderr_data = logs_obj.stderr
@@ -288,9 +325,11 @@ class CodeExecutor:
                 # 过滤 curl 下载进度信息和 IPython 警告
                 if not self._is_curl_progress(stderr_text) and not self._is_ipython_warning(stderr_text):
                     error_parts.append(stderr_text)
-                    self.logger.warning(f"[CodeExecutor] 错误输出: {stderr_text[:200]}...")
+                    # 优化日志输出：只显示前100字符
+                    preview = stderr_text[:100].replace('\n', ' ')
+                    self.logger.warning(f"[CodeExecutor] 错误输出: {preview}...")
                 else:
-                    self.logger.debug(f"[CodeExecutor] 过滤的错误输出: {stderr_text[:100]}...")
+                    self.logger.debug(f"[CodeExecutor] 已过滤的输出（进度/警告）")
         else:
             self.logger.warning("[CodeExecutor] 未找到日志对象")
         
@@ -403,7 +442,21 @@ class CodeExecutor:
         if self.sandbox:
             try:
                 self.logger.debug("[CodeExecutor] 清理沙箱")
-                await asyncio.wait_for(self.sandbox.kill(), timeout=5)
+                # 检查事件循环是否仍在运行
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    self.logger.warning("[CodeExecutor] 事件循环已关闭，跳过沙箱清理")
+                    self.sandbox = None
+                    return
+                
+                # 使用 shield 保护清理操作，防止被取消
+                await asyncio.shield(
+                    asyncio.wait_for(self.sandbox.kill(), timeout=5)
+                )
+                self.sandbox = None
+            except asyncio.CancelledError:
+                self.logger.warning("[CodeExecutor] 清理操作被取消")
                 self.sandbox = None
             except Exception as e:
                 self.logger.warning(f"[CodeExecutor] 清理沙箱失败: {e}")
+                self.sandbox = None

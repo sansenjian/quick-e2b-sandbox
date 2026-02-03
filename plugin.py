@@ -180,48 +180,64 @@ except: pass
         session_id = self.chat_id or "default_session"
         
         try:
-            # ========== 阶段 1: 代码生成 ==========
+            # ========== 阶段 1: 意图识别 ==========
             # 导入组件
             from .code_generator import CodeGenerator
             from .template_library import TemplateLibrary
             from .code_executor import CodeExecutor
             from .result_optimizer import ResultOptimizer
+            from .intent_recognizer import IntentRecognizer
             from .models import Intent, Context
             
             # 初始化组件
             template_library = TemplateLibrary()
-            code_generator = CodeGenerator(template_library, None, self.config)  # LLM 暂时为 None
+            code_generator = CodeGenerator(template_library, self.config)  # 不再传递 llm_client
             code_executor = CodeExecutor(self.config)
             result_optimizer = ResultOptimizer(None, self.config)  # LLM 暂时为 None
             
-            logger.info(f"[E2BSandboxTool] 开始代码生成 | user_request: {user_request[:50]}...")
+            # 检查是否启用 LLM 意图识别
+            enable_intent_recognition = self.config.get("llm", {}).get("enable_intent_recognition", True)
             
-            # MVP 阶段：创建简单的 Intent 对象
-            # 将 user_request 放在 parameters 中，让模板库进行关键词匹配
-            # 同时尝试提取 URL 参数（用于截图等需要 URL 的模板）
-            parameters = {"user_request": user_request}
+            if enable_intent_recognition:
+                # 使用 IntentRecognizer 识别意图
+                logger.info(f"[E2BSandboxTool] 开始意图识别 | user_request: {user_request[:50]}...")
+                
+                intent_recognizer = IntentRecognizer(self.config)
+                intent = await intent_recognizer.recognize(user_request)
+                
+                logger.info(
+                    f"[E2BSandboxTool] 意图识别完成 | "
+                    f"task_type={intent.task_type}, "
+                    f"sub_type={intent.sub_type}, "
+                    f"confidence={intent.confidence:.2f}"
+                )
+            else:
+                # MVP 模式：创建简单的 Intent 对象
+                logger.info(f"[E2BSandboxTool] LLM 意图识别已禁用，使用简单模式")
+                
+                # 将 user_request 放在 parameters 中，让模板库进行关键词匹配
+                parameters = {"user_request": user_request}
+                
+                # 简单的 URL 提取逻辑
+                import re
+                url_pattern = r'https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+'
+                url_match = re.search(url_pattern, user_request)
+                if url_match:
+                    url = url_match.group(0).rstrip('"\'),.;!?')
+                    parameters["url"] = url
+                    logger.debug(f"[E2BSandboxTool] 提取到 URL: {parameters['url']}")
+                
+                intent = Intent(
+                    task_type="unknown",
+                    sub_type=None,
+                    parameters=parameters,
+                    confidence=1.0,
+                    needs_context=False,
+                    context_refs=[]
+                )
             
-            # 简单的 URL 提取逻辑
-            import re
-            # 修改正则表达式，只匹配 URL 的有效字符，排除引号、括号等
-            url_pattern = r'https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+'
-            url_match = re.search(url_pattern, user_request)
-            if url_match:
-                # 清理 URL 末尾可能的标点符号
-                url = url_match.group(0)
-                # 移除末尾的引号、括号、逗号等
-                url = url.rstrip('"\'),.;!?')
-                parameters["url"] = url
-                logger.debug(f"[E2BSandboxTool] 提取到 URL: {parameters['url']}")
-            
-            simple_intent = Intent(
-                task_type="unknown",
-                sub_type=None,
-                parameters=parameters,
-                confidence=1.0,
-                needs_context=False,
-                context_refs=[]
-            )
+            # ========== 阶段 2: 代码生成 ==========
+            logger.info(f"[E2BSandboxTool] 开始代码生成")
             
             # MVP 阶段：创建空的 Context 对象
             simple_context = Context(
@@ -234,7 +250,7 @@ except: pass
             )
             
             # 生成代码
-            generated_code = await code_generator.generate(simple_intent, simple_context)
+            generated_code = await code_generator.generate(intent, simple_context)
             
             logger.info(
                 f"[E2BSandboxTool] 代码生成完成 | "
@@ -381,13 +397,77 @@ class E2BSandboxPlugin(BasePlugin):
     config_file_name: str = "config.toml"
 
     # 配置段描述
-    config_section_descriptions = {"plugin": "插件基本信息", "e2b": "E2B 云沙箱配置"}
+    config_section_descriptions = {
+        "plugin": "插件基本信息",
+        "model_config": "LLM 模型配置",
+        "llm": "LLM 功能开关和参数",
+        "e2b": "E2B 云沙箱配置"
+    }
 
     # 配置 schema
     config_schema: dict = {
             "plugin": {
-                "config_version": ConfigField(type=str, default="1.0.10", description="配置文件版本"),
+                "config_version": ConfigField(type=str, default="2.0.0", description="配置文件版本"),
                 "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
+            },
+            "model_config": {
+                "model_name": ConfigField(
+                    type=str,
+                    default="replyer",
+                    description="指定用于意图识别和代码生成的系统模型名称。默认为 'replyer'，即系统主回复模型。",
+                    choices=[
+                        "replyer",
+                        "utils",
+                        "tool_use",
+                        "planner",
+                        "vlm",
+                        "lpmm_entity_extract",
+                        "lpmm_rdf_build",
+                        "lpmm_qa",
+                    ],
+                ),
+                "temperature": ConfigField(
+                    type=float,
+                    default=0.5,
+                    description="模型生成温度。如果留空，则使用所选模型的默认温度。"
+                ),
+                "context_time_gap": ConfigField(
+                    type=int,
+                    default=300,
+                    description="获取最近多少秒的全局聊天记录作为上下文。"
+                ),
+                "context_max_limit": ConfigField(
+                    type=int,
+                    default=15,
+                    description="最多获取多少条全局聊天记录作为上下文。"
+                ),
+            },
+            "llm": {
+                "enable_intent_recognition": ConfigField(
+                    type=bool,
+                    default=True,
+                    description="是否启用 LLM 意图识别"
+                ),
+                "enable_code_generation": ConfigField(
+                    type=bool,
+                    default=True,
+                    description="是否启用 LLM 代码生成"
+                ),
+                "intent_temperature": ConfigField(
+                    type=float,
+                    default=0.3,
+                    description="意图识别温度（0-1）"
+                ),
+                "generation_temperature": ConfigField(
+                    type=float,
+                    default=0.5,
+                    description="代码生成温度（0-1）"
+                ),
+                "max_tokens": ConfigField(
+                    type=int,
+                    default=2000,
+                    description="最大 token 数"
+                ),
             },
             "e2b": {
                 "api_key": ConfigField(

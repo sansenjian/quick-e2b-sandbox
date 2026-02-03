@@ -32,17 +32,29 @@ class TemplateLibrary:
         
         从各个模板模块中导入模板并注册到库中。
         """
-        # 导入网络请求模板
-        from .templates.web_templates import WEB_SCRAPE_TITLE
-        self.templates["web_scrape_title"] = WEB_SCRAPE_TITLE
-        
-        # 导入截图模板
-        from .templates.screenshot_templates import WEB_SCREENSHOT
-        self.templates["web_screenshot"] = WEB_SCREENSHOT
-        
-        # 导入绘图模板
-        from .templates.plot_templates import PLOT_SINE_WAVE
-        self.templates["plot_sine_wave"] = PLOT_SINE_WAVE
+        # 支持相对导入和绝对导入
+        try:
+            # 导入网络请求模板
+            from .templates.web_templates import WEB_SCRAPE_TITLE
+            self.templates["web_scrape_title"] = WEB_SCRAPE_TITLE
+            
+            # 导入截图模板（简洁版）
+            from .templates.web_screenshot_templates_compact import WEB_SCREENSHOT_COMPACT
+            self.templates["web_screenshot"] = WEB_SCREENSHOT_COMPACT
+            
+            # 导入绘图模板
+            from .templates.plot_templates import PLOT_SINE_WAVE
+            self.templates["plot_sine_wave"] = PLOT_SINE_WAVE
+        except ImportError:
+            # 绝对导入（用于测试）
+            from templates.web_templates import WEB_SCRAPE_TITLE
+            self.templates["web_scrape_title"] = WEB_SCRAPE_TITLE
+            
+            from templates.web_screenshot_templates_compact import WEB_SCREENSHOT_COMPACT
+            self.templates["web_screenshot"] = WEB_SCREENSHOT_COMPACT
+            
+            from templates.plot_templates import PLOT_SINE_WAVE
+            self.templates["plot_sine_wave"] = PLOT_SINE_WAVE
     
     def get(self, key: str) -> Optional[Template]:
         """获取指定名称的模板
