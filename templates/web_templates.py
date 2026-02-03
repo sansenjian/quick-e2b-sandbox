@@ -2,7 +2,11 @@
 网络请求相关的代码模板
 """
 
-from ..models import Template
+# 支持相对导入和绝对导入
+try:
+    from ..models import Template
+except ImportError:
+    from models import Template
 
 
 # 网页标题抓取模板

@@ -1,8 +1,10 @@
 """
 绘图相关的代码模板
 """
-
-from ..models import Template
+try:
+    from ..models import Template
+except ImportError:
+    from models import Template
 
 
 # 正弦曲线绘制模板
