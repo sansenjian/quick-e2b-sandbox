@@ -55,31 +55,41 @@ class E2BSandboxTool(BaseTool):
     # Tool 基本信息
     name = "quick_python_exec"
     description = """
-在云沙箱中执行 Python 代码。
+在云沙箱中执行 Python 代码。支持以下功能：
 
-【核心能力】
-1. **无状态环境**：每次调用都是全新的独立环境
-2. **自动装库**：自动检测并安装常用库（matplotlib、numpy、pandas、requests、playwright 等）
-3. **支持绘图**：matplotlib、PIL、seaborn 等可视化库
-4. **支持联网**：可进行网络请求、API 调用、网页爬虫
-5. **浏览器自动化**：支持 Playwright 进行网页操作
-6. **动态装库**：支持在代码中通过 pip 安装第三方库。
+【网页内容获取】⭐ 重点
+1. **抓取网页标题**：使用 requests + BeautifulSoup 获取网页 <title> 标签内容
+2. **抓取网页正文**：提取网页主要文本内容、段落、链接等
+3. **获取网页元数据**：description、keywords、author 等 meta 标签信息
+4. **网页截图**：使用 Playwright 对任意网页进行全页面截图
+5. **解析网页结构**：提取特定 HTML 元素、表格数据等
 
-【绘图规范】⚠️ 重要
-- 必须将图片保存为文件（如 'plot.png'、'chart.jpg'）
-- 严禁使用 plt.show()（会导致错误）
+【数据处理与分析】
+1. **数据分析**：使用 pandas、numpy 进行数据处理和统计分析
+2. **数据可视化**：使用 matplotlib、seaborn 绘制图表（必须保存为文件，禁用 plt.show()）
+3. **文件处理**：读写 CSV、JSON、Excel 等格式文件
 
-【输出建议】
+【网络功能】
+1. **API 调用**：调用第三方 API 获取数据（天气、翻译、搜索等）
+2. **网页爬虫**：批量抓取网页数据
+3. **文件下载**：下载网络资源
+
+【环境特性】
+- 每次调用都是全新的独立环境（无状态）
+- 自动检测并安装常用库（requests、beautifulsoup4、matplotlib、numpy、pandas、playwright 等）
+- 支持在代码中通过 pip 动态安装第三方库
+
+【使用建议】
 - 使用 print() 输出关键信息和结果
 - 避免输出过长的内容（建议 < 500 字符）
-- 图表优于文本：复杂数据用图表展示
+- 图表必须保存为文件（如 'plot.png'），严禁使用 plt.show()
 
-【常见场景】
+【典型应用场景】
+✅ 查询网页信息（标题、内容、元数据）
+✅ 网页截图和内容抓取
 ✅ 数据分析和可视化
-✅ 网络爬虫和 API 调用
-✅ 机器学习模型训练
+✅ API 调用和网络请求
 ✅ 图像处理和生成
-✅ 网页自动化和截图
 ✅ 数据库操作（SQLite）
 """
     
@@ -399,9 +409,9 @@ class E2BSandboxPlugin(BasePlugin):
     # 配置段描述
     config_section_descriptions = {
         "plugin": "插件基本信息",
+        "e2b": "E2B 云沙箱配置",
         "model_config": "LLM 模型配置",
-        "llm": "LLM 功能开关和参数",
-        "e2b": "E2B 云沙箱配置"
+        "llm": "LLM 功能开关和参数"
     }
 
     # 配置 schema
@@ -409,6 +419,54 @@ class E2BSandboxPlugin(BasePlugin):
             "plugin": {
                 "config_version": ConfigField(type=str, default="2.0.0", description="配置文件版本"),
                 "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
+            },
+            "e2b": {
+                "api_key": ConfigField(
+                    type=str,
+                    default="",
+                    description="E2B API Key",
+                    required=True,
+                    input_type="password",
+                ),
+                "api_base_url": ConfigField(
+                    type=str,
+                    default="",
+                    description="E2B API Base URL（可选，国内用户建议配置代理）",
+                    required=False,
+                ),
+                "timeout": ConfigField(
+                    type=int,
+                    default=60,
+                    description="代码执行超时时间（秒）",
+                    min=10,
+                    max=300,
+                ),
+                "max_retries": ConfigField(
+                    type=int,
+                    default=2,
+                    description="网络连接失败时的最大重试次数",
+                    min=0,
+                    max=5,
+                ),
+                "max_output_length": ConfigField(
+                    type=int,
+                    default=2000,
+                    description="最大输出长度（字符）",
+                    min=500,
+                    max=10000,
+                ),
+                "max_stdout_length": ConfigField(
+                    type=int,
+                    default=500,
+                    description="标准输出最大长度（字符），避免触发消息分割限制",
+                    min=100,
+                    max=2000,
+                ),
+                "debug_mode": ConfigField(
+                    type=bool,
+                    default=False,
+                    description="调试模式：开启后会输出 E2B 返回的所有原始信息（包括被过滤的内容）",
+                ),
             },
             "model_config": {
                 "model_name": ConfigField(
@@ -467,54 +525,6 @@ class E2BSandboxPlugin(BasePlugin):
                     type=int,
                     default=2000,
                     description="最大 token 数"
-                ),
-            },
-            "e2b": {
-                "api_key": ConfigField(
-                    type=str,
-                    default="",
-                    description="E2B API Key",
-                    required=True,
-                    input_type="password",
-                ),
-                "api_base_url": ConfigField(
-                    type=str,
-                    default="",
-                    description="E2B API Base URL（可选，国内用户建议配置代理）",
-                    required=False,
-                ),
-                "timeout": ConfigField(
-                    type=int,
-                    default=60,
-                    description="代码执行超时时间（秒）",
-                    min=10,
-                    max=300,
-                ),
-                "max_retries": ConfigField(
-                    type=int,
-                    default=2,
-                    description="网络连接失败时的最大重试次数",
-                    min=0,
-                    max=5,
-                ),
-                "max_output_length": ConfigField(
-                    type=int,
-                    default=2000,
-                    description="最大输出长度（字符）",
-                    min=500,
-                    max=10000,
-                ),
-                "max_stdout_length": ConfigField(
-                    type=int,
-                    default=500,
-                    description="标准输出最大长度（字符），避免触发消息分割限制",
-                    min=100,
-                    max=2000,
-                ),
-                "debug_mode": ConfigField(
-                    type=bool,
-                    default=False,
-                    description="调试模式：开启后会输出 E2B 返回的所有原始信息（包括被过滤的内容）",
                 ),
             },
         }

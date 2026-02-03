@@ -166,7 +166,7 @@ python main.py
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `enabled` | bool | true | 是否启用插件 |
-| `config_version` | string | 1.0.11 | 配置文件版本号 |
+| `config_version` | string | 2.0.0 | 配置文件版本号 |
 
 ### E2B 云沙箱配置 (e2b)
 
@@ -194,7 +194,7 @@ python main.py
 ```toml
 [plugin]
 enabled = true
-config_version = "1.0.11"
+config_version = "2.0.0"
 
 [e2b]
 # API 配置
@@ -505,7 +505,7 @@ python tests/show_templates.py            # 查看所有可用模板
 
 **最后更新**：2025-02-03
 
-**版本**：1.0.11
+**版本**：2.0.0
 
 **作者**：sansenjian
 
