@@ -331,7 +331,7 @@ class CodeGenerator:
         
         Args:
             prompt: 发送给 LLM 的提示词
-            temperature: 温度参数，如果为 None 则使用配置值
+            temperature: 温度参数，如果为 None 则根据配置决定是否传递
             
         Returns:
             LLM 生成的文本响应
@@ -342,8 +342,19 @@ class CodeGenerator:
             if not models:
                 raise ValueError("系统中没有可用的 LLM 模型配置。")
 
-            # 从配置中获取目标模型名称
-            target_model_name = self.config.get("model_config", {}).get("model_name", "replyer")
+            # 检查是否启用分离模型
+            use_separate_models = self.config.get("separate_models", {}).get("use_separate_models", False)
+            
+            # 根据配置选择模型名称
+            if use_separate_models:
+                # 使用代码生成专用模型
+                target_model_name = self.config.get("separate_models", {}).get("generation_model_name", "replyer")
+                self.logger.debug(f"[CodeGenerator] 使用分离模型模式，代码生成模型: {target_model_name}")
+            else:
+                # 使用统一模型
+                target_model_name = self.config.get("unified_model", {}).get("model_name", "replyer")
+                self.logger.debug(f"[CodeGenerator] 使用统一模型模式，模型: {target_model_name}")
+            
             model_config = models.get(target_model_name)
 
             # 如果找不到指定模型，使用默认模型
@@ -357,16 +368,28 @@ class CodeGenerator:
             else:
                 self.logger.info(f"[CodeGenerator] 使用模型: {target_model_name}")
 
-            # 获取温度配置
-            if temperature is None:
+            # 根据配置决定是否使用自定义温度
+            use_custom_temp = self.config.get("llm", {}).get("use_custom_temperature", True)
+            
+            if temperature is None and use_custom_temp:
+                # 如果没有指定温度且启用了自定义温度，使用配置值
                 temperature = self.config.get("llm", {}).get("generation_temperature", 0.5)
+            elif not use_custom_temp:
+                # 如果禁用了自定义温度，不传递温度参数
+                temperature = None
 
             # 调用系统 LLM API
-            success, content, _, _ = await llm_api.generate_with_model(
-                prompt,
-                model_config,
-                temperature=temperature
-            )
+            if temperature is not None:
+                success, content, _, _ = await llm_api.generate_with_model(
+                    prompt,
+                    model_config,
+                    temperature=temperature
+                )
+            else:
+                success, content, _, _ = await llm_api.generate_with_model(
+                    prompt,
+                    model_config
+                )
             
             if success:
                 return content.strip() if content else ""
