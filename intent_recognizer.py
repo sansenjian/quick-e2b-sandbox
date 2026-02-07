@@ -57,10 +57,13 @@ class IntentRecognizer:
             prompt = self._build_prompt(user_request, context)
             
             # 2. 调用 LLM
-            response = await self._call_llm(
-                prompt,
-                temperature=self.config.get("llm", {}).get("intent_temperature", 0.3)
-            )
+            # 根据配置决定是否使用自定义温度
+            use_custom_temp = self.config.get("llm", {}).get("use_custom_temperature", True)
+            if use_custom_temp:
+                temperature = self.config.get("llm", {}).get("intent_temperature", 1.0)
+                response = await self._call_llm(prompt, temperature=temperature)
+            else:
+                response = await self._call_llm(prompt, temperature=None)
             
             # 3. 解析 JSON
             intent_data = self._parse_response(response)
@@ -199,14 +202,14 @@ class IntentRecognizer:
             self.logger.error(f"[IntentRecognizer] JSON 解析失败: {e}")
             return default_intent
     
-    async def _call_llm(self, prompt: str, temperature: float = 0.3) -> str:
+    async def _call_llm(self, prompt: str, temperature: Optional[float] = 0.3) -> str:
         """统一的 LLM 调用函数
         
         参考 google_search_plugin 的实现，使用系统 LLM API。
         
         Args:
             prompt: 发送给 LLM 的提示词
-            temperature: 温度参数
+            temperature: 温度参数，如果为 None 则不传递（使用模型默认值）
             
         Returns:
             LLM 生成的文本响应
@@ -217,8 +220,19 @@ class IntentRecognizer:
             if not models:
                 raise ValueError("系统中没有可用的 LLM 模型配置。")
 
-            # 从配置中获取目标模型名称
-            target_model_name = self.config.get("model_config", {}).get("model_name", "replyer")
+            # 检查是否启用分离模型
+            use_separate_models = self.config.get("separate_models", {}).get("use_separate_models", False)
+            
+            # 根据配置选择模型名称
+            if use_separate_models:
+                # 使用意图识别专用模型
+                target_model_name = self.config.get("separate_models", {}).get("intent_model_name", "replyer")
+                self.logger.debug(f"[IntentRecognizer] 使用分离模型模式，意图识别模型: {target_model_name}")
+            else:
+                # 使用统一模型
+                target_model_name = self.config.get("unified_model", {}).get("model_name", "replyer")
+                self.logger.debug(f"[IntentRecognizer] 使用统一模型模式，模型: {target_model_name}")
+            
             model_config = models.get(target_model_name)
 
             # 如果找不到指定模型，使用默认模型
@@ -233,11 +247,18 @@ class IntentRecognizer:
                 self.logger.info(f"[IntentRecognizer] 使用模型: {target_model_name}")
 
             # 调用系统 LLM API
-            success, content, _, _ = await llm_api.generate_with_model(
-                prompt,
-                model_config,
-                temperature=temperature
-            )
+            # 如果 temperature 为 None，则不传递该参数
+            if temperature is not None:
+                success, content, _, _ = await llm_api.generate_with_model(
+                    prompt,
+                    model_config,
+                    temperature=temperature
+                )
+            else:
+                success, content, _, _ = await llm_api.generate_with_model(
+                    prompt,
+                    model_config
+                )
             
             if success:
                 return content.strip() if content else ""

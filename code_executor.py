@@ -95,8 +95,7 @@ class CodeExecutor:
                 self.sandbox = await asyncio.wait_for(
                     AsyncSandbox.create(
                         api_key=api_key,
-                        api_url=api_base_url if api_base_url else None,
-                        timeout=timeout + 30
+                        api_url=api_base_url if api_base_url else None
                     ),
                     timeout=60
                 )

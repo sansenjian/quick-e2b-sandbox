@@ -410,14 +410,15 @@ class E2BSandboxPlugin(BasePlugin):
     config_section_descriptions = {
         "plugin": "插件基本信息",
         "e2b": "E2B 云沙箱配置",
-        "model_config": "LLM 模型配置",
+        "unified_model": "模型配置",
+        "separate_models": "分离模型（高级模式）",
         "llm": "LLM 功能开关和参数"
     }
 
     # 配置 schema
     config_schema: dict = {
             "plugin": {
-                "config_version": ConfigField(type=str, default="2.0.0", description="配置文件版本"),
+                "config_version": ConfigField(type=str, default="2.0.1", description="配置文件版本"),
                 "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
             },
             "e2b": {
@@ -468,11 +469,11 @@ class E2BSandboxPlugin(BasePlugin):
                     description="调试模式：开启后会输出 E2B 返回的所有原始信息（包括被过滤的内容）",
                 ),
             },
-            "model_config": {
+            "unified_model": {
                 "model_name": ConfigField(
                     type=str,
                     default="replyer",
-                    description="指定用于意图识别和代码生成的系统模型名称。默认为 'replyer'，即系统主回复模型。",
+                    description="统一模型名称（当不使用分离模型时，意图识别和代码生成都使用此模型）",
                     choices=[
                         "replyer",
                         "utils",
@@ -484,20 +485,52 @@ class E2BSandboxPlugin(BasePlugin):
                         "lpmm_qa",
                     ],
                 ),
-                "temperature": ConfigField(
-                    type=float,
-                    default=0.5,
-                    description="模型生成温度。如果留空，则使用所选模型的默认温度。"
-                ),
                 "context_time_gap": ConfigField(
                     type=int,
                     default=300,
-                    description="获取最近多少秒的全局聊天记录作为上下文。"
+                    description="获取最近多少秒的全局聊天记录作为上下文"
                 ),
                 "context_max_limit": ConfigField(
                     type=int,
                     default=15,
-                    description="最多获取多少条全局聊天记录作为上下文。"
+                    description="最多获取多少条全局聊天记录作为上下文"
+                ),
+            },
+            "separate_models": {
+                "use_separate_models": ConfigField(
+                    type=bool,
+                    default=False,
+                    description="是否为意图识别和代码生成使用不同的模型"
+                ),
+                "intent_model_name": ConfigField(
+                    type=str,
+                    default="replyer",
+                    description="意图识别专用模型（仅在启用分离模型时生效）",
+                    choices=[
+                        "replyer",
+                        "utils",
+                        "tool_use",
+                        "planner",
+                        "vlm",
+                        "lpmm_entity_extract",
+                        "lpmm_rdf_build",
+                        "lpmm_qa",
+                    ],
+                ),
+                "generation_model_name": ConfigField(
+                    type=str,
+                    default="replyer",
+                    description="代码生成专用模型（仅在启用分离模型时生效）",
+                    choices=[
+                        "replyer",
+                        "utils",
+                        "tool_use",
+                        "planner",
+                        "vlm",
+                        "lpmm_entity_extract",
+                        "lpmm_rdf_build",
+                        "lpmm_qa",
+                    ],
                 ),
             },
             "llm": {
@@ -511,15 +544,20 @@ class E2BSandboxPlugin(BasePlugin):
                     default=True,
                     description="是否启用 LLM 代码生成"
                 ),
+                "use_custom_temperature": ConfigField(
+                    type=bool,
+                    default=True,
+                    description="是否使用自定义温度参数。关闭后将使用模型默认温度。"
+                ),
                 "intent_temperature": ConfigField(
                     type=float,
-                    default=0.3,
-                    description="意图识别温度（0-1）"
+                    default=1.0,
+                    description="意图识别温度（0-1）。仅在启用自定义温度时生效。"
                 ),
                 "generation_temperature": ConfigField(
                     type=float,
                     default=0.5,
-                    description="代码生成温度（0-1）"
+                    description="代码生成温度（0-1）。仅在启用自定义温度时生效。"
                 ),
                 "max_tokens": ConfigField(
                     type=int,
